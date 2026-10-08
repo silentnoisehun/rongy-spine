@@ -5,8 +5,9 @@
 // Author: Máté Róbert (silentnoisehun)
 // License: MIT
 
-use syn::{self, parse_file, ItemFn, ReturnType, Item};
-use quote::{quote, ToTokens};
+use syn::{self, parse_file, ReturnType, Item};
+use syn::visit::Visit;
+use quote::quote;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone)]
@@ -34,8 +35,9 @@ impl AstRefactor {
         for item in &ast.items {
             if let Item::Fn(func) = item {
                 let fn_name = func.sig.ident.to_string();
-                let fn_code = func.to_token_stream().to_string();
-                let unwrap_count = fn_code.matches(".unwrap()").count();
+                let mut counter = UnwrapCounter::default();
+                counter.visit_item_fn(func);
+                let unwrap_count = counter.count;
                 report.functions_found += 1;
 
                 if fn_name == "main" || fn_name.starts_with("test_") { continue; }
@@ -49,7 +51,6 @@ impl AstRefactor {
                 targets.push(FnTarget {
                     name: fn_name,
                     original_return: return_str,
-                    unwrap_count,
                 });
             }
         }
@@ -164,7 +165,7 @@ impl AstRefactor {
             if let Item::Fn(func) = item {
                 let name = func.sig.ident.to_string();
                 let mut counter = UnwrapCounter::default();
-                syn::visit::visit_item_fn(&mut counter, func);
+                counter.visit_item_fn(func);
 
                 let return_str = match &func.sig.output {
                     ReturnType::Type(_, ty) => quote!(#ty).to_string().replace(" ", ""),
@@ -327,7 +328,6 @@ impl AstRefactor {
 struct FnTarget {
     name: String,
     original_return: String,
-    unwrap_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -343,7 +343,7 @@ struct UnwrapCounter {
     count: usize,
 }
 
-impl<'ast> syn::visit::Visit<'ast> for UnwrapCounter {
+impl<'ast> Visit<'ast> for UnwrapCounter {
     fn visit_expr_method_call(&mut self, i: &'ast syn::ExprMethodCall) {
         if i.method == "unwrap" && i.args.is_empty() {
             self.count += 1;

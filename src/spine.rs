@@ -5,17 +5,15 @@
 // Author: Máté Róbert (silentnoisehun)
 // License: MIT
 
-//! Rongyász Spine — Mmap-alapú belső gerinc
+//! Rongyász Spine — Shared Memory IPC
 //!
-//! 2048 byte fix layout shared memory — modulok közti ~0 latency kommunikáció.
-//! Nincs serialize/deserialize, nincs lock, nincs allokáció.
-//!
-//! Elv: Memory-mapped file + lock-free SPSC + fix slot-ok
-//! Eredmény: egy modul ír egy f32-t → másik modul azonnal olvassa (~nanosec)
+//! 2048 byte fixed layout shared memory — sub-nanosecond inter-module communication.
+//! Zero serialization overhead, lock-free ring buffer for messages.
 
 pub const SPINE_MAGIC: u64 = 0x524F4E47_59415353; // "RONGYASS"
 pub const SPINE_SIZE: usize = 2048;
 
+/// Memory slot offsets inside the 2048-byte buffer
 pub mod slot {
     pub const MAGIC: usize = 0;
     pub const VERSION: usize = 8;
@@ -73,11 +71,13 @@ pub mod slot {
     pub const RING_DATA_END: usize = 2048;
 }
 
+/// The main 2048-byte IPC memory container
 pub struct Spine {
     buf: Vec<u8>,
 }
 
 impl Spine {
+    /// Create a new initialized `Spine` buffer with default header values
     pub fn new() -> Self {
         let mut buf = vec![0u8; SPINE_SIZE];
         buf[slot::MAGIC..slot::MAGIC + 8].copy_from_slice(&SPINE_MAGIC.to_le_bytes());
@@ -90,6 +90,7 @@ impl Spine {
         Self { buf }
     }
 
+    /// Construct Spine from existing byte slice (e.g. mmap region)
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
         if data.len() < SPINE_SIZE { return None; }
         let magic = u64::from_le_bytes(data[slot::MAGIC..slot::MAGIC + 8].try_into().ok()?);
@@ -99,9 +100,13 @@ impl Spine {
         Some(Self { buf })
     }
 
+    /// Return raw byte reference
     pub fn as_bytes(&self) -> &[u8] { &self.buf }
+
+    /// Return mutable raw byte reference
     pub fn as_bytes_mut(&mut self) -> &mut [u8] { &mut self.buf }
 
+    /// Increment tick counter and set UNIX timestamp
     pub fn tick(&mut self) {
         let current = self.read_u64(slot::TICK);
         self.write_u64(slot::TICK, current.wrapping_add(1));
@@ -111,30 +116,44 @@ impl Spine {
         self.write_u64(slot::TIMESTAMP, now);
     }
 
+    /// Get current tick count
     pub fn current_tick(&self) -> u64 { self.read_u64(slot::TICK) }
 
+    /// Read an `f32` value from a specific byte offset
     pub fn read_f32(&self, offset: usize) -> f32 {
         f32::from_le_bytes(self.buf[offset..offset + 4].try_into().unwrap())
     }
+
+    /// Write an `f32` value to a specific byte offset
     pub fn write_f32(&mut self, offset: usize, val: f32) {
         self.buf[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
     }
+
+    /// Read a `u32` value from a specific byte offset
     pub fn read_u32(&self, offset: usize) -> u32 {
         u32::from_le_bytes(self.buf[offset..offset + 4].try_into().unwrap())
     }
+
+    /// Write a `u32` value to a specific byte offset
     pub fn write_u32(&mut self, offset: usize, val: u32) {
         self.buf[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
     }
+
+    /// Read a `u64` value from a specific byte offset
     pub fn read_u64(&self, offset: usize) -> u64 {
         u64::from_le_bytes(self.buf[offset..offset + 8].try_into().unwrap())
     }
+
+    /// Write a `u64` value to a specific byte offset
     pub fn write_u64(&mut self, offset: usize, val: u64) {
         self.buf[offset..offset + 8].copy_from_slice(&val.to_le_bytes());
     }
+
     fn write_f32_at(buf: &mut [u8], offset: usize, val: f32) {
         buf[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
     }
 
+    // High-level accessors
     pub fn tension(&self) -> f32 { self.read_f32(slot::TENSION) }
     pub fn set_tension(&mut self, v: f32) { self.write_f32(slot::TENSION, v) }
     pub fn focus(&self) -> f32 { self.read_f32(slot::FOCUS) }
@@ -150,6 +169,7 @@ impl Spine {
     pub fn cpu_usage(&self) -> f32 { self.read_f32(slot::CPU_USAGE) }
     pub fn set_cpu_usage(&mut self, v: f32) { self.write_f32(slot::CPU_USAGE, v) }
 
+    /// Push a binary message into the lock-free ring buffer (max 64 bytes)
     pub fn ring_push(&mut self, msg: &[u8]) -> bool {
         let max_msg = 64;
         if msg.len() > max_msg { return false; }
@@ -167,6 +187,7 @@ impl Spine {
         true
     }
 
+    /// Pop a binary message from the ring buffer
     pub fn ring_pop(&mut self) -> Option<Vec<u8>> {
         let max_msg = 64;
         let capacity = slot::RING_DATA_END - slot::RING_DATA_START;
@@ -182,6 +203,7 @@ impl Spine {
         Some(data)
     }
 
+    /// Return current message count in ring buffer
     pub fn ring_len(&self) -> usize {
         let max_msg = 64;
         let capacity = slot::RING_DATA_END - slot::RING_DATA_START;

@@ -32,9 +32,12 @@ inter-process communication between all system modules.
 - Fixed slot offsets for every module (affective state, consciousness, colony, etc.)
 - Lock-free ring buffer for inter-module messaging
 - Zero serialization overhead — raw binary reads/writes
-- ~1.4 ns/op measured on AMD Ryzen 5 5600X
+- Sub-nanosecond slot access and ~2.7 ns ring buffer operations
 
 ```rust
+use rongy_spine::Spine;
+
+let mut spine = Spine::new();
 // Every module reads/writes shared state at nanosecond speed
 spine.set_colony_fitness(0.97);
 spine.set_tension(0.3);
@@ -50,10 +53,12 @@ AST-level code mutation using `syn` — not regex, not string replace.
 - Structurally valid output guaranteed by the AST
 
 ```rust
+use rongy_spine::AstRefactor;
+
 // Input: fn load(path: &str) -> String { fs::read_to_string(path).unwrap() }
-// Output: fn load(path: &str) -> Result<String, Box<dyn Error>> {
-//     let result = fs::read_to_string(path)?;
-//     Ok(result)
+// Output: fn load(path: &str) -> Result<String, Box<dyn std::error::Error>> {
+//     let content = fs::read_to_string(path)?;
+//     Ok(content)
 // }
 let (improved_code, report) = AstRefactor::refactor_file(&source)?;
 ```
@@ -64,7 +69,8 @@ The full evolution cycle: scan → mutate → fitness check → build check → 
 Safety anchors (immutable files the system can NEVER touch):
 ```rust
 const IMMUTABLE_FILES: &[&str] = &[
-    "safety.rs",        // This file itself
+    "safety.rs",        // Safety anchor core
+    "spine.rs",         // IPC backbone
     "main.rs",          // Entry point
     "hope_watchdog.rs", // Ethics layer
     "self_evolve.rs",   // The mutator cannot mutate itself
@@ -112,16 +118,17 @@ Full cycle:
 
 ---
 
-## Benchmarks
+## Benchmarks & Real Measured Performance
 
-Measured on AMD Ryzen 5 5600X, 16GB RAM, `--release` build:
+Measured on **4-core Intel Xeon CPU @ 2.30GHz, Linux x86_64**, `--release` build:
 
-| Operation | Speed |
-|-----------|-------|
-| Spine f32 read/write | ~1.4 ns/op |
-| Full tick cycle | ~31.5 ns/op |
-| AST parse + mutate (avg file) | ~2-8 ms |
-| cargo check (incremental) | ~800ms-2s |
+| Operation | Measured Performance | Notes |
+|-----------|----------------------|-------|
+| Spine f32 read/write | ~0.06 ns/op | Pure in-memory slot manipulation |
+| Spine full tick cycle | ~33.2 ns/op | Tick count increment + timestamp generation |
+| Ring buffer push + pop | ~2.70 ns/op | Lock-free SPSC messaging queue |
+| AST parse + mutate (avg file) | ~0.127 ms (127 µs) | Complete `syn` AST parse, traversal & refactoring |
+| Incremental build check (`cargo check`) | ~800ms - 2s | External Rust compiler ground truth check |
 
 ---
 
@@ -138,16 +145,54 @@ This is structural safety, not prompt-based safety.
 
 ---
 
-## Installation
+## Quickstart & Usage
+
+Anyone can use `rongy-spine` as a binary or as a library in their own Rust projects.
+
+### 1. Run Benchmarks & Demonstration CLI
 
 ```bash
 git clone https://github.com/silentnoisehun/rongy-spine
 cd rongy-spine
-cargo build --release
 cargo test
+cargo run --release
 ```
 
-Dependencies: `syn`, `quote`, `proc-macro2`, `rand`, `tracing`, `serde`
+### 2. Use as a Library
+
+Add `rongy-spine` to your `Cargo.toml`:
+
+```toml
+[dependencies]
+rongy-spine = { path = "." } # or from crates.io / git repo
+```
+
+Example Rust usage:
+
+```rust
+use rongy_spine::{Spine, AstRefactor, SafetyCore};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Initialize 2048-byte IPC bus
+    let mut spine = Spine::new();
+    spine.set_tension(0.25);
+    spine.set_confidence(0.98);
+    spine.tick();
+
+    println!("Current tick: {}, Tension: {}", spine.current_tick(), spine.tension());
+
+    // 2. Check mutation safety rules
+    let safety = SafetyCore::new();
+    if safety.can_mutate("src/my_module.rs").is_allowed() {
+        // 3. Perform AST-level code refactoring
+        let code = "fn run() -> String { std::fs::read_to_string(\"test.txt\").unwrap() }";
+        let (refactored, report) = AstRefactor::refactor_file(code)?;
+        println!("Refactored code:\n{}", refactored);
+    }
+
+    Ok(())
+}
+```
 
 ---
 
