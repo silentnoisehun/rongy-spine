@@ -13,6 +13,7 @@ use std::process::Command;
 /// Files the system can NEVER modify — these are the anchors
 const IMMUTABLE_FILES: &[&str] = &[
     "safety.rs",
+    "spine.rs",
     "sentinel.rs",
     "immune_system.rs",
     "self_evolve.rs",
@@ -114,7 +115,13 @@ impl SafetyCore {
     }
 }
 
-#[derive(Debug, Clone)]
+impl Default for SafetyCore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SafetyCheck {
     Allowed,
     Blocked(String),
